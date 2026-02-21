@@ -27,14 +27,15 @@ import (
 type Client struct {
 	httpClient *req.Client
 	cookies    *CookieStore
-	at         string 
+	at         string
 	mu         sync.RWMutex
 	healthy    bool
 	log        *zap.Logger
-	
+
 	autoRefresh     bool
 	refreshInterval time.Duration
 	stopRefresh     chan struct{}
+	maxRetries      int
 
 	reqMu sync.Mutex
 }
@@ -68,12 +69,18 @@ func NewClient(cfg *config.Config, log *zap.Logger) *Client {
 		refreshIntervalMinutes = defaultRefreshIntervalMinutes
 	}
 
+	maxRetries := cfg.Gemini.MaxRetries
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+
 	return &Client{
 		httpClient:      client,
 		cookies:         cookies,
 		autoRefresh:     true,
 		refreshInterval: time.Duration(refreshIntervalMinutes) * time.Minute,
 		stopRefresh:     make(chan struct{}),
+		maxRetries:      maxRetries,
 		log:             log,
 	}
 }
@@ -418,24 +425,53 @@ func (c *Client) GenerateContent(ctx context.Context, prompt string, options ...
 	}
 
 
-	startTime := time.Now()
-	resp, err := c.httpClient.R().
-		SetContext(ctx).
-		SetFormData(formData).
-		SetQueryParam("at", c.at).
-		Post(EndpointGenerate)
+	var lastErr error
+	for attempt := 0; attempt <= c.maxRetries; attempt++ {
+		if attempt > 0 {
+			c.log.Warn("Retrying generate request",
+				zap.Int("attempt", attempt),
+				zap.Int("max_retries", c.maxRetries),
+				zap.Error(lastErr),
+			)
+		}
 
-	duration := time.Since(startTime)
-	if err != nil {
-		c.log.Error("Generate request failed", zap.Error(err), zap.Duration("duration", duration))
-		return nil, err
+		// Abort remaining attempts if the caller cancelled the context.
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		startTime := time.Now()
+		resp, err := c.httpClient.R().
+			SetContext(ctx).
+			SetFormData(formData).
+			SetQueryParam("at", c.at).
+			Post(EndpointGenerate)
+
+		duration := time.Since(startTime)
+		if err != nil {
+			c.log.Error("Generate request failed", zap.Error(err), zap.Duration("duration", duration))
+			lastErr = err
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("generate failed with status: %d", resp.StatusCode)
+			continue
+		}
+
+		result, err := c.parseResponse(resp.String())
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if attempt > 0 {
+			c.log.Info("Generate request succeeded after retry", zap.Int("attempt", attempt))
+		}
+		return result, nil
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("generate failed with status: %d", resp.StatusCode)
-	}
-
-	return c.parseResponse(resp.String())
+	return nil, lastErr
 }
 
 func (c *Client) StartChat(options ...providers.ChatOption) providers.ChatSession {

@@ -60,12 +60,14 @@
 2. **Configure your cookies**:
    - Go to [gemini.google.com](https://gemini.google.com) and sign in
    - Press `F12` → **Application** tab → **Cookies**
-   - Copy `__Secure-1PSID`, `__Secure-1PSIDTS` and `__Secure-1PSIDCC` (recommended)
+   - Copy `__Secure-1PSID` and `__Secure-1PSIDTS`
    - Create a `.env` file from the example:
      ```bash
      cp .env.example .env
      ```
    - Edit `.env` and paste your cookie values.
+
+   > **Note**: `__Secure-1PSIDCC` is no longer needed. The server obtains it automatically via cookie rotation.
 
 3. **Start the server (Build locally to ensure architecture compatibility)**:
 
@@ -78,7 +80,7 @@
    ```bash
    curl -X POST http://localhost:4981/openai/v1/chat/completions \
      -H "Content-Type: application/json" \
-     -d '{"model": "gemini-pro", "messages": [{"role": "user", "content": "Hello!"}]}'
+     -d '{"model": "gemini-2.0-flash", "messages": [{"role": "user", "content": "Hello!"}]}'
    ```
 
 5. **Done!** Your Gemini Web To API is running at `http://localhost:4981`
@@ -106,9 +108,38 @@ docker run -d -p 4981:4981 \
 - 🌉 **Universal AI Bridge**: One server, three protocols (OpenAI, Claude, Gemini)
 - 🔌 **Drop-in Replacement**: Works with existing OpenAI/Claude/Gemini SDKs
 - 🔄 **Smart Session Management**: Auto-rotates cookies to keep sessions alive
+- 🔁 **Built-in Retry Logic**: Automatically retries failed requests (configurable via `GEMINI_MAX_RETRIES`)
 - ⚡ **High Performance**: Built with Go and Fiber for speed
 - 🐳 **Production Ready**: Docker support, Swagger UI, health checks
 - 📝 **Well Documented**: Interactive API docs at `/swagger/`
+
+---
+
+## ✅ Verified Working Models
+
+The following models have been tested and confirmed working:
+
+| Model | Avg latency | Reliability | Notes |
+|---|---|---|---|
+| `gemini-2.5-flash` | ~10s | High | Best overall — fast and consistent |
+| `gemini-2.5-pro` | ~13s | High | Slower but more stable on long prompts |
+| `gemini-2.0-flash` | ~58s | Medium | Being retired March 2026 |
+| `gemini-2.0-flash-lite` | ~68s | Medium | Being retired March 2026 |
+| `gemini-1.5-pro` | — | Medium | Retired, may return 404 |
+| `gemini-1.5-flash` | — | Medium | Retired, may return 404 |
+
+**Recommended model**: `gemini-2.5-flash` for best speed and reliability.
+
+> **Note**: The `/models` endpoint returns a hardcoded list that is out of date. Any valid Gemini model ID can be passed directly — the server forwards it as-is to Gemini's web interface.
+
+### Performance characteristics
+
+Latency is higher than the official Gemini API because requests go through Gemini's web interface. Key findings from benchmarking (20 rounds, long prompt):
+
+- Short prompts: **~2–10s** median response time
+- Long/detailed prompts: **~10–23s** median response time
+- Occasional failures (~10%) are inherent to the web interface — **retry logic** (built-in) handles these transparently
+- Adding delays between requests does **not** improve reliability; failures are random session instability, not rate limiting
 
 ---
 
@@ -121,7 +152,10 @@ docker run -d -p 4981:4981 \
 | `GEMINI_1PSID`            | ✅ Yes   | -       | Main session cookie from Gemini         |
 | `GEMINI_1PSIDTS`          | ✅ Yes   | -       | Timestamp cookie (prevents auth errors) |
 | `GEMINI_REFRESH_INTERVAL` | ❌ No    | 30      | Cookie rotation interval (minutes)      |
+| `GEMINI_MAX_RETRIES`      | ❌ No    | 3       | Retry attempts on failed requests       |
 | `PORT`                    | ❌ No    | 4981    | Server port                             |
+
+> **Note**: `GEMINI_1PSIDCC` is no longer read from environment variables and can be omitted. The server obtains it automatically via cookie rotation.
 
 ### Configuration Priority
 
@@ -140,11 +174,11 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:4981/openai/v1",
-    api_key="not-needed"
+    api_key="not-needed"  # no API key required, but SDK needs a non-empty value
 )
 
 response = client.chat.completions.create(
-    model="gemini-pro",
+    model="gemini-2.0-flash",
     messages=[{"role": "user", "content": "Hello!"}]
 )
 print(response.choices[0].message.content)
@@ -187,13 +221,78 @@ print(response.text)
 curl -X POST http://localhost:4981/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gemini-pro",
+    "model": "gemini-2.0-flash",
     "messages": [{"role": "user", "content": "What is AI?"}],
     "stream": false
   }'
 ```
 
 **More examples**: Check the [`examples/`](examples/) directory for complete working code.
+
+---
+
+## 🔁 Retry Logic
+
+The proxy automatically retries failed requests (parse errors, non-200 responses, network errors) up to `GEMINI_MAX_RETRIES` times before returning an error to the caller. Each retry is logged with the attempt number.
+
+```
+GEMINI_MAX_RETRIES=0   # disable retries
+GEMINI_MAX_RETRIES=3   # default (up to 4 total attempts)
+GEMINI_MAX_RETRIES=5   # more aggressive
+```
+
+Retries are skipped immediately if the client disconnects (context cancelled).
+
+---
+
+## 📊 Benchmarking
+
+Two scripts are included in `scripts/` to measure performance:
+
+### `scripts/benchmark.py` — response latency per model
+
+```bash
+# defaults: gemini-2.5-flash + gemini-2.5-pro, 5 rounds
+python3 scripts/benchmark.py
+
+# custom models and rounds
+python3 scripts/benchmark.py --models gemini-2.5-flash gemini-2.0-flash --rounds 10
+
+# custom prompt and server
+python3 scripts/benchmark.py --base-url http://localhost:4981 \
+  --prompt "Explain recursion in one sentence"
+```
+
+### `scripts/delay_sweep.py` — find the impact of inter-request delays
+
+Tests a range of delay values to determine whether throttling or rate limiting is a factor.
+
+```bash
+# default delays: 0s, 3s, 7s, 15s, 30s
+python3 scripts/delay_sweep.py
+
+# custom delays and rounds
+python3 scripts/delay_sweep.py --delays 0 5 10 20 --rounds 10
+```
+
+> **Finding**: delays between requests do **not** reduce failure rates. Failures are random session instability, not rate limiting. The built-in retry logic is the correct mitigation.
+
+---
+
+## 🔗 API Endpoints
+
+| Style | Endpoint | Description |
+|---|---|---|
+| OpenAI | `GET /openai/v1/models` | List models |
+| OpenAI | `POST /openai/v1/chat/completions` | Chat completions |
+| Claude | `GET /claude/v1/models` | List models |
+| Claude | `POST /claude/v1/messages` | Send messages |
+| Claude | `POST /claude/v1/messages/count_tokens` | Count tokens |
+| Gemini | `GET /gemini/v1beta/models` | List models |
+| Gemini | `POST /gemini/v1beta/models/{model}:generateContent` | Generate content |
+| Gemini | `POST /gemini/v1beta/models/{model}:streamGenerateContent` | Stream content |
+| — | `GET /health` | Health check |
+| — | `GET /swagger/` | Interactive API docs |
 
 ---
 
