@@ -93,6 +93,9 @@ func (h *GeminiHandler) HandleV1BetaGenerateContent(c *fiber.Ctx) error {
 	}
 
 	opts := []providers.GenerateOption{providers.WithModel(model)}
+	if strings.Contains(model, "deep-research") {
+		opts = append(opts, providers.WithDeepResearch(true))
+	}
 
 	// Add timeout to context
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Minute)
@@ -148,6 +151,9 @@ func (h *GeminiHandler) HandleV1BetaStreamGenerateContent(c *fiber.Ctx) error {
 	}
 
 	opts := []providers.GenerateOption{providers.WithModel(model)}
+	if strings.Contains(model, "deep-research") {
+		opts = append(opts, providers.WithDeepResearch(true))
+	}
 
 	c.Set("Content-Type", "application/json")
 	c.Set("Transfer-Encoding", "chunked")

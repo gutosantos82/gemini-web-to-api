@@ -112,6 +112,7 @@ docker run -d -p 4981:4981 \
 - ⚡ **High Performance**: Built with Go and Fiber for speed
 - 🐳 **Production Ready**: Docker support, Swagger UI, health checks
 - 📝 **Well Documented**: Interactive API docs at `/swagger/`
+- 🔍 **Deep Research**: Multi-step autonomous research mode via `:deep-research` suffix
 
 ---
 
@@ -123,6 +124,8 @@ The following models have been tested and confirmed working:
 |---|---|---|---|
 | `gemini-2.5-flash` | ~10s | High | Best overall — fast and consistent |
 | `gemini-2.5-pro` | ~13s | High | Slower but more stable on long prompts |
+| `gemini-2.5-flash:deep-research` | ~45s | High | **NEW**: Research mode on the latest Flash model |
+| `gemini-1.5-flash:deep-research` | ~40s | High | **NEW**: Research mode on a stable legacy model |
 | `gemini-2.0-flash` | ~58s | Medium | Being retired March 2026 |
 | `gemini-2.0-flash-lite` | ~68s | Medium | Being retired March 2026 |
 | `gemini-1.5-pro` | — | Medium | Retired, may return 404 |
@@ -214,6 +217,25 @@ model = genai.GenerativeModel("gemini-pro")
 response = model.generate_content("Write a poem about coding")
 print(response.text)
 ```
+
+### Deep Research (Autonomous Mode)
+
+Simply append `:deep-research` to **any** Gemini model name to trigger the multi-step autonomous research tool. It works across all supported models, including:
+- `gemini-2.5-flash:deep-research`
+- `gemini-2.0-flash:deep-research` (recommended)
+- `gemini-1.5-flash:deep-research`
+
+```bash
+curl -X POST http://localhost:4981/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-2.0-flash:deep-research",
+    "messages": [{"role": "user", "content": "Explain the major developments in fusion energy in early 2026."}],
+    "stream": false
+  }'
+```
+
+The server will automatically handle the initial planning phase and the subsequent execution phase, returning the final comprehensive research report.
 
 ### cURL (Direct HTTP)
 

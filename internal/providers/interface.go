@@ -90,8 +90,9 @@ type GenerateOption func(*GenerateConfig)
 type GenerateConfig struct {
 	Model       string
 	Files       []string
-	Temperature float64
-	MaxTokens   int
+	Temperature  float64
+	MaxTokens    int
+	DeepResearch bool
 }
 
 // ChatOption configures chat session behavior
@@ -128,5 +129,12 @@ func WithChatModel(model string) ChatOption {
 func WithChatMetadata(metadata *SessionMetadata) ChatOption {
 	return func(c *ChatConfig) {
 		c.Metadata = metadata
+	}
+}
+
+// WithDeepResearch enables Deep Research mode
+func WithDeepResearch(enabled bool) GenerateOption {
+	return func(c *GenerateConfig) {
+		c.DeepResearch = enabled
 	}
 }

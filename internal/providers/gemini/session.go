@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"gemini-web-to-api/internal/providers"
+
+	"github.com/google/uuid"
 )
 
 // ChatSession implements providers.ChatSession for Gemini
@@ -23,6 +25,15 @@ func (s *ChatSession) SendMessage(ctx context.Context, message string, options .
 	
 	if s.client.at == "" {
 		return nil, fmt.Errorf("client not initialized")
+	}
+
+	config := &providers.GenerateConfig{}
+	for _, opt := range options {
+		opt(config)
+	}
+
+	if config.DeepResearch {
+		return s.sendDeepResearchMessage(ctx, message, options...)
 	}
 
 	// Build conversation context
@@ -60,6 +71,95 @@ func (s *ChatSession) SendMessage(ctx context.Context, message string, options .
 	}
 
 	// Update session metadata
+	s.updateSessionMetadata(response)
+
+	// Update history
+	s.history = append(s.history, providers.Message{
+		Role:    "user",
+		Content: message,
+	})
+	s.history = append(s.history, providers.Message{
+		Role:    "model",
+		Content: response.Text,
+	})
+
+	return response, nil
+}
+
+func (s *ChatSession) sendDeepResearchMessage(ctx context.Context, message string, options ...providers.GenerateOption) (*providers.Response, error) {
+	// Phase 1: Planning
+	reqID := uuid.New().String()
+
+	// Index 0: prompt array
+	promptArr := []interface{}{message, 0, nil, nil, nil, nil, 0}
+
+	inner := make([]interface{}, 65)
+	inner[0] = promptArr
+	inner[1] = []interface{}{"en"}
+	inner[2] = []interface{}{"", "", "", nil, nil, nil, nil, nil, nil, ""}
+	inner[3] = "" 
+	inner[4] = "7aed6d3c8dcea919033bfd7cdb523177"
+	inner[17] = []interface{}{[]interface{}{0}} // Indicator for planning
+	inner[54] = []interface{}{[]interface{}{[]interface{}{[]interface{}{[]interface{}{1}}}}} // Deep Research nested flag
+	inner[55] = []interface{}{[]interface{}{1}}
+	inner[59] = reqID
+
+	innerJSON, _ := json.Marshal(inner)
+	outer := []interface{}{nil, string(innerJSON)}
+	outerJSON, _ := json.Marshal(outer)
+
+	resp1, err := s.client.doRequest(ctx, outerJSON)
+	if err != nil {
+		return nil, err
+	}
+
+	res1, err := s.client.parseResponse(resp1.String())
+	if err != nil {
+		return nil, err
+	}
+
+	stateToken, ok := res1.Metadata["state_token"].(string)
+	if !ok || stateToken == "" {
+		return res1, nil
+	}
+
+	// Phase 2: Execution
+	// Index 0: prompt array for execution
+	promptArr2 := []interface{}{"Start research", 0, nil, nil, nil, nil, 0}
+
+	inner2 := make([]interface{}, 65)
+	inner2[0] = promptArr2
+	inner2[1] = inner[1]
+	inner2[2] = []interface{}{res1.Metadata["cid"], res1.Metadata["rid"], res1.Metadata["rcid"]}
+	inner2[3] = stateToken
+	inner2[17] = []interface{}{[]interface{}{1}} // Indicator for execution
+	inner2[54] = inner[54]
+	inner2[55] = inner[55]
+	inner2[59] = reqID
+
+	innerJSON2, _ := json.Marshal(inner2)
+	outer2 := []interface{}{nil, string(innerJSON2), nil, stateToken}
+	outerJSON2, _ := json.Marshal(outer2)
+
+	resp2, err := s.client.doRequest(ctx, outerJSON2)
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := s.client.parseResponse(resp2.String())
+	if err != nil {
+		return nil, err
+	}
+
+	// Update session metadata and history
+	s.updateSessionMetadata(response)
+	s.history = append(s.history, providers.Message{Role: "user", Content: message})
+	s.history = append(s.history, providers.Message{Role: "model", Content: response.Text})
+
+	return response, nil
+}
+
+func (s *ChatSession) updateSessionMetadata(response *providers.Response) {
 	if response.Metadata != nil {
 		if cid, ok := response.Metadata["cid"].(string); ok && cid != "" {
 			if s.metadata == nil {
@@ -80,18 +180,6 @@ func (s *ChatSession) SendMessage(ctx context.Context, message string, options .
 			s.metadata.ChoiceID = rcid
 		}
 	}
-
-	// Update history
-	s.history = append(s.history, providers.Message{
-		Role:    "user",
-		Content: message,
-	})
-	s.history = append(s.history, providers.Message{
-		Role:    "model",
-		Content: response.Text,
-	})
-
-	return response, nil
 }
 
 // GetMetadata returns session metadata

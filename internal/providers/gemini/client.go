@@ -20,6 +20,7 @@ import (
 	"gemini-web-to-api/internal/config"
 	"gemini-web-to-api/internal/providers"
 
+	"github.com/google/uuid"
 	"github.com/imroc/req/v3"
 	"go.uber.org/zap"
 )
@@ -382,6 +383,87 @@ func (c *Client) RotateCookies() error {
 	return errors.New("no new __Secure-1PSIDTS cookie received")
 }
 
+func (c *Client) generateDeepResearch(ctx context.Context, prompt string, options ...providers.GenerateOption) (*providers.Response, error) {
+	// Phase 1: Planning
+	c.log.Info("Starting Deep Research Phase 1: Planning", zap.String("prompt", prompt))
+	
+	reqID := uuid.New().String()
+	
+	// Index 0: prompt array
+	promptArr := []interface{}{prompt, 0, nil, nil, nil, nil, 0}
+	
+	inner := make([]interface{}, 65)
+	inner[0] = promptArr
+	inner[1] = []interface{}{"en"}
+	inner[2] = []interface{}{"", "", "", nil, nil, nil, nil, nil, nil, ""}
+	inner[3] = "" 
+	inner[4] = "7aed6d3c8dcea919033bfd7cdb523177"
+	inner[17] = []interface{}{[]interface{}{0}} // Indicator for planning
+	inner[54] = []interface{}{[]interface{}{[]interface{}{[]interface{}{[]interface{}{1}}}}} // Deep Research nested flag
+	inner[55] = []interface{}{[]interface{}{1}}
+	inner[59] = reqID
+
+	innerJSON, _ := json.Marshal(inner)
+	outer := []interface{}{nil, string(innerJSON)}
+	outerJSON, _ := json.Marshal(outer)
+
+	resp1, err := c.doRequest(ctx, outerJSON)
+	if err != nil {
+		return nil, fmt.Errorf("deep research planning failed: %w", err)
+	}
+
+	res1, err := c.parseResponse(resp1.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse planning response: %w", err)
+	}
+
+	stateToken, ok := res1.Metadata["state_token"].(string)
+	if !ok || stateToken == "" {
+		c.log.Warn("No state token found in planning response, returning plan as is")
+		return res1, nil
+	}
+
+	// Phase 2: Execution
+	c.log.Info("Starting Deep Research Phase 2: Execution", zap.String("state_token", stateToken))
+	
+	// Index 0: prompt array for execution
+	promptArr2 := []interface{}{"Start research", 0, nil, nil, nil, nil, 0}
+	
+	inner2 := make([]interface{}, 65)
+	inner2[0] = promptArr2
+	inner2[1] = inner[1]
+	inner2[2] = []interface{}{res1.Metadata["cid"], res1.Metadata["rid"], res1.Metadata["rcid"]}
+	inner2[3] = stateToken
+	inner2[17] = []interface{}{[]interface{}{1}} // Indicator for execution
+	inner2[54] = inner[54]
+	inner2[55] = inner[55]
+	inner2[59] = reqID
+
+	innerJSON2, _ := json.Marshal(inner2)
+	outer2 := []interface{}{nil, string(innerJSON2), nil, stateToken}
+	outerJSON2, _ := json.Marshal(outer2)
+
+	resp2, err := c.doRequest(ctx, outerJSON2)
+	if err != nil {
+		return nil, fmt.Errorf("deep research execution failed: %w", err)
+	}
+
+	return c.parseResponse(resp2.String())
+}
+
+func (c *Client) doRequest(ctx context.Context, outerJSON []byte) (*req.Response, error) {
+	formData := map[string]string{
+		"at":    c.at,
+		"f.req": string(outerJSON),
+	}
+
+	return c.httpClient.R().
+		SetContext(ctx).
+		SetFormData(formData).
+		SetQueryParam("at", c.at).
+		Post(EndpointGenerate)
+}
+
 func (c *Client) GetCookies() *CookieStore {
 	c.cookies.mu.RLock()
 	defer c.cookies.mu.RUnlock()
@@ -406,6 +488,10 @@ func (c *Client) GenerateContent(ctx context.Context, prompt string, options ...
 
 	if c.at == "" {
 		return nil, errors.New("client not initialized")
+	}
+
+	if config.DeepResearch {
+		return c.generateDeepResearch(ctx, prompt, options...)
 	}
 
 	// Build request payload
@@ -568,12 +654,18 @@ func (c *Client) parseResponse(text string) (*providers.Response, error) {
 										}
 									}
 
+									// Extract state token (for Deep Research)
+									var stateToken string
+									// Recursively search for string starting with '!'
+									stateToken = extractStateToken(payload)
+
 									return &providers.Response{
 										Text: resText,
 										Metadata: map[string]any{
-											"cid":  cid,
-											"rid":  rid,
-											"rcid": rcid,
+											"cid":         cid,
+											"rid":         rid,
+											"rcid":        rcid,
+											"state_token": stateToken,
 										},
 									}, nil
 								}
@@ -590,6 +682,28 @@ func (c *Client) parseResponse(text string) (*providers.Response, error) {
 		sample = sample[:500]
 	}
 	return nil, fmt.Errorf("failed to parse response. Sample: %s", sample)
+}
+
+func extractStateToken(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		if strings.HasPrefix(val, "!") && len(val) > 20 {
+			return val
+		}
+	case []interface{}:
+		for _, item := range val {
+			if token := extractStateToken(item); token != "" {
+				return token
+			}
+		}
+	case map[string]interface{}:
+		for _, item := range val {
+			if token := extractStateToken(item); token != "" {
+				return token
+			}
+		}
+	}
+	return ""
 }
 
 func (cs *CookieStore) ToHTTPCookies() []*http.Cookie {

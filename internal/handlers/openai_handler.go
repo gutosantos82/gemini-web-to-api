@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"gemini-web-to-api/internal/models"
@@ -84,6 +85,9 @@ func (h *OpenAIHandler) HandleChatCompletions(c *fiber.Ctx) error {
 	opts := []providers.GenerateOption{}
 	if req.Model != "" {
 		opts = append(opts, providers.WithModel(req.Model))
+		if strings.Contains(req.Model, "deep-research") {
+			opts = append(opts, providers.WithDeepResearch(true))
+		}
 	}
 
 	// Handle Streaming
