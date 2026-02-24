@@ -24,6 +24,9 @@ type Provider interface {
 
 	// ListModels returns models supported by this provider
 	ListModels() []ModelInfo
+
+	// RetrieveDeepResearch fetches the full research report and references for a given conversation
+	RetrieveDeepResearch(ctx context.Context, conversationID string) (*Response, error)
 }
 
 // ChatSession represents a multi-turn conversation
@@ -50,6 +53,7 @@ type Response struct {
 	ChosenIndex   int                 `json:"chosen_index"`
 	ConversationID string             `json:"conversation_id,omitempty"`
 	ResponseID    string              `json:"response_id,omitempty"`
+	References    []Reference         `json:"references,omitempty"`
 }
 
 // Message represents a single message in conversation
@@ -72,6 +76,14 @@ type Image struct {
 type Candidate struct {
 	ID      string `json:"id"`
 	Content string `json:"content"`
+}
+
+// Reference represents a research source
+type Reference struct {
+	Title   string `json:"title"`
+	URL     string `json:"url"`
+	Snippet string `json:"snippet,omitempty"`
+	Icon    string `json:"icon,omitempty"`
 }
 
 // SessionMetadata contains information to restore a session

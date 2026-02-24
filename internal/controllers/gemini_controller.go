@@ -54,9 +54,22 @@ func (g *GeminiController) HandleV1BetaStreamGenerateContent(ctx *fiber.Ctx) err
 	return g.handler.HandleV1BetaStreamGenerateContent(ctx)
 }
 
+// HandleRetrieveDeepResearch fetches existing deep research content
+// @Summary Retrieve Deep Research Content
+// @Description Fetches report text and references for a given conversation
+// @Tags Gemini
+// @Produce json
+// @Param conversationID path string true "Conversation ID"
+// @Success 200 {object} providers.Response
+// @Router /gemini/v1beta/conversations/{conversationID}/research [get]
+func (g *GeminiController) HandleRetrieveDeepResearch(ctx *fiber.Ctx) error {
+	return g.handler.HandleRetrieveDeepResearch(ctx)
+}
+
 // Register registers the Gemini routes on the provided router (typically a group)
 func (g *GeminiController) Register(group fiber.Router) {
 	group.Get("/models", g.HandleV1BetaModels)
 	group.Post("/models/:model\\:generateContent", g.HandleV1BetaGenerateContent)
 	group.Post("/models/:model\\:streamGenerateContent", g.HandleV1BetaStreamGenerateContent)
+	group.Get("/conversations/:conversationID/research", g.HandleRetrieveDeepResearch)
 }

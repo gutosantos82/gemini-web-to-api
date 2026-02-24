@@ -37,8 +37,9 @@ config.yml
 # logs
 *.log
 
-# server
+# server / built binary
 ./server
+gemini-web-to-api
 
 # Editor/IDE
 .idea/

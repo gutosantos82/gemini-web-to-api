@@ -604,8 +604,20 @@ func (c *Client) ListModels() []providers.ModelInfo {
 	return models
 }
 
-// parseResponse parses Gemini's response format
+// parseResponse parses Gemini's response format.
+// It scans ALL wrb.fr items across all lines to collect:
+//   - response text (from candidates)
+//   - conversation metadata (cid, rid, rcid)
+//   - state token (from dict key "26" in a secondary item, or legacy "!" prefix strings)
 func (c *Client) parseResponse(text string) (*providers.Response, error) {
+	var (
+		resText    string
+		cid        string
+		rid        string
+		rcid       string
+		stateToken string
+	)
+
 	lines := strings.Split(text, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -615,73 +627,101 @@ func (c *Client) parseResponse(text string) (*providers.Response, error) {
 		line = strings.TrimPrefix(line, ")]}'")
 
 		var root []interface{}
-		if err := json.Unmarshal([]byte(line), &root); err == nil {
-			for _, item := range root {
-				itemArray, ok := item.([]interface{})
-				if !ok || len(itemArray) < 3 {
-					continue
-				}
+		if err := json.Unmarshal([]byte(line), &root); err != nil {
+			continue
+		}
 
-				payloadStr, ok := itemArray[2].(string)
-				if !ok {
-					continue
-				}
+		for _, item := range root {
+			itemArray, ok := item.([]interface{})
+			if !ok || len(itemArray) < 3 {
+				continue
+			}
 
-				var payload []interface{}
-				if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil {
-					continue
-				}
+			payloadStr, ok := itemArray[2].(string)
+			if !ok {
+				continue
+			}
 
-				if len(payload) > 4 {
-					candidates, ok := payload[4].([]interface{})
-					if ok && candidates != nil && len(candidates) > 0 {
-						firstCandidate, ok := candidates[0].([]interface{})
-						if ok && len(firstCandidate) >= 2 {
-							contentParts, ok := firstCandidate[1].([]interface{})
-							if ok && len(contentParts) > 0 {
-								resText, ok := contentParts[0].(string)
-								if ok {
-									// Extract conversation metadata if available
-									var cid, rid, rcid string
-									if len(firstCandidate) > 0 {
-										if id, ok := firstCandidate[0].(string); ok {
-											rcid = id
-										}
+			var payload []interface{}
+			if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil {
+				continue
+			}
+
+			// Extract cid/rid from payload[1] (string or []string)
+			if len(payload) > 1 && cid == "" {
+				switch v := payload[1].(type) {
+				case string:
+					cid = v
+				case []interface{}:
+					if len(v) > 0 {
+						if s, ok := v[0].(string); ok {
+							cid = s
+						}
+					}
+					if len(v) > 1 && rid == "" {
+						if s, ok := v[1].(string); ok {
+							rid = s
+						}
+					}
+				}
+			}
+
+			// Extract text from candidates at payload[4]
+			if resText == "" && len(payload) > 4 {
+				candidates, ok := payload[4].([]interface{})
+				if ok && len(candidates) > 0 {
+					firstCandidate, ok := candidates[0].([]interface{})
+					if ok && len(firstCandidate) >= 2 {
+						contentParts, ok := firstCandidate[1].([]interface{})
+						if ok && len(contentParts) > 0 {
+							if s, ok := contentParts[0].(string); ok {
+								resText = s
+								if len(firstCandidate) > 0 {
+									if id, ok := firstCandidate[0].(string); ok {
+										rcid = id
 									}
-									if len(payload) > 1 {
-										if id, ok := payload[1].(string); ok {
-											cid = id
-										}
-									}
-
-									// Extract state token (for Deep Research)
-									var stateToken string
-									// Recursively search for string starting with '!'
-									stateToken = extractStateToken(payload)
-
-									return &providers.Response{
-										Text: resText,
-										Metadata: map[string]any{
-											"cid":         cid,
-											"rid":         rid,
-											"rcid":        rcid,
-											"state_token": stateToken,
-										},
-									}, nil
 								}
 							}
 						}
 					}
 				}
 			}
+
+			// Extract state token: new format is a dict with key "26" at payload[2]
+			if stateToken == "" && len(payload) > 2 {
+				if m, ok := payload[2].(map[string]interface{}); ok {
+					if v, exists := m["26"]; exists {
+						if s, ok := v.(string); ok && len(s) > 10 {
+							stateToken = s
+						}
+					}
+				}
+			}
+
+			// Legacy state token: recursive search for string starting with '!'
+			if stateToken == "" {
+				stateToken = extractStateToken(payload)
+			}
 		}
 	}
 
-	sample := text
-	if len(sample) > 500 {
-		sample = sample[:500]
+	if resText == "" {
+		sample := text
+		if len(sample) > 500 {
+			sample = sample[:500]
+		}
+		return nil, fmt.Errorf("failed to parse response. Sample: %s", sample)
 	}
-	return nil, fmt.Errorf("failed to parse response. Sample: %s", sample)
+
+	return &providers.Response{
+		Text: resText,
+		Metadata: map[string]any{
+			"cid":         cid,
+			"rid":         rid,
+			"rcid":        rcid,
+			"state_token": stateToken,
+		},
+	}, nil
 }
 
 func extractStateToken(v interface{}) string {
@@ -799,6 +839,154 @@ func (c *Client) SaveCachedCookies() error {
 		c.log.Warn("Failed to save cookies to cache", zap.String("file", filename), zap.Error(err))
 	}
 	return err
+}
+
+// RetrieveDeepResearch fetches the full research report and references for a given conversation
+func (c *Client) RetrieveDeepResearch(ctx context.Context, conversationID string) (*providers.Response, error) {
+	c.log.Info("Retrieving Deep Research content", zap.String("conversation_id", conversationID))
+
+	if c.at == "" {
+		return nil, errors.New("client not initialized")
+	}
+
+	// Payload for kwDCne (BatchExecute)
+	inner := []interface{}{conversationID}
+	innerJSON, _ := json.Marshal(inner)
+	
+	fReq := [][][]interface{}{
+		{
+			{"kwDCne", string(innerJSON), nil, "generic"},
+		},
+	}
+	fReqJSON, _ := json.Marshal(fReq)
+
+	formData := map[string]string{
+		"at":    c.at,
+		"f.req": string(fReqJSON),
+	}
+
+	resp, err := c.httpClient.R().
+		SetContext(ctx).
+		SetFormData(formData).
+		SetQueryParam("rpcids", "kwDCne").
+		SetQueryParam("hl", "en").
+		SetQueryParam("rt", "c").
+		Post(EndpointBatchExec)
+
+	if err != nil {
+		return nil, fmt.Errorf("retrieval request failed: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("retrieval failed with status: %d", resp.StatusCode)
+	}
+
+	// Parse BatchExecute response
+	body := resp.String()
+	lines := strings.Split(body, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ")]}'") {
+			continue
+		}
+
+		var envelope []interface{}
+		if err := json.Unmarshal([]byte(line), &envelope); err != nil {
+			continue
+		}
+
+		for _, item := range envelope {
+			itemArr, ok := item.([]interface{})
+			if !ok || len(itemArr) < 3 || itemArr[0] != "wrb.fr" {
+				continue
+			}
+
+			payloadStr, ok := itemArr[2].(string)
+			if !ok {
+				continue
+			}
+
+			var payload []interface{}
+			if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil {
+				continue
+			}
+
+			// Based on browser investigation:
+			// data[0][1][4] is the report object
+			// Index 0: Title, 1: Summary, 2: Steps (array)
+			if len(payload) > 0 {
+				// DEBUG: dump payload to file for inspection
+				if debugJSON, err2 := json.MarshalIndent(payload, "", "  "); err2 == nil {
+					_ = os.WriteFile("/tmp/kwdcne_payload.json", debugJSON, 0644)
+				}
+
+				data, ok := payload[0].([]interface{})
+				if !ok || len(data) < 2 {
+					continue
+				}
+
+				reportContainer, ok := data[1].([]interface{})
+				if !ok || len(reportContainer) < 5 {
+					continue
+				}
+
+				report, ok := reportContainer[4].([]interface{})
+				if !ok || len(report) < 3 {
+					continue
+				}
+
+				// Extract main text (usually Title + Summary)
+				title, _ := report[0].(string)
+				summary, _ := report[1].(string)
+				fullText := title + "\n\n" + summary
+
+				// Extract references from steps
+				var references []providers.Reference
+				steps, ok := report[2].([]interface{})
+				if ok {
+					for _, step := range steps {
+						stepArr, ok := step.([]interface{})
+						if !ok || len(stepArr) < 5 {
+							continue
+						}
+
+						resultObj, ok := stepArr[4].([]interface{})
+						if !ok || len(resultObj) < 3 {
+							continue
+						}
+
+						sourceArr, ok := resultObj[2].([]interface{})
+						if !ok || len(sourceArr) < 4 {
+							continue
+						}
+
+						// [favicon_url, target_url, title, snippet]
+						icon, _ := sourceArr[0].(string)
+						url, _ := sourceArr[1].(string)
+						refTitle, _ := sourceArr[2].(string)
+						snippet, _ := sourceArr[3].(string)
+
+						if url != "" {
+							references = append(references, providers.Reference{
+								Title:   refTitle,
+								URL:     url,
+								Snippet: snippet,
+								Icon:    icon,
+							})
+						}
+					}
+				}
+
+				return &providers.Response{
+					Text:           fullText,
+					ConversationID: conversationID,
+					References:     references,
+				}, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("failed to extract research data from response")
 }
 
 // ClearCookieCache deletes the cached cookie file for the current PSID

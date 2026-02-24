@@ -113,6 +113,7 @@ docker run -d -p 4981:4981 \
 - 🐳 **Production Ready**: Docker support, Swagger UI, health checks
 - 📝 **Well Documented**: Interactive API docs at `/swagger/`
 - 🔍 **Deep Research**: Multi-step autonomous research mode via `:deep-research` suffix
+- 📄 **Research Retrieval**: Fetch full research reports and structured references with source metadata
 
 ---
 
@@ -237,6 +238,19 @@ curl -X POST http://localhost:4981/openai/v1/chat/completions \
 
 The server will automatically handle the initial planning phase and the subsequent execution phase, returning the final comprehensive research report.
 
+#### Retrieving Research Results (with References)
+
+You can retrieve the full research report and associated references for an existing research conversation:
+
+```bash
+curl -X GET http://localhost:4981/gemini/v1beta/conversations/{conversationID}/research
+```
+
+**Response Format**:
+Returns a JSON object with:
+- `text`: The full research report (Title + Summary)
+- `references`: An array of sources, each containing `title`, `url`, `snippet`, and `icon`.
+
 ### cURL (Direct HTTP)
 
 ```bash
@@ -313,6 +327,7 @@ python3 scripts/delay_sweep.py --delays 0 5 10 20 --rounds 10
 | Gemini | `GET /gemini/v1beta/models` | List models |
 | Gemini | `POST /gemini/v1beta/models/{model}:generateContent` | Generate content |
 | Gemini | `POST /gemini/v1beta/models/{model}:streamGenerateContent` | Stream content |
+| Gemini | `GET /gemini/v1beta/conversations/{conversationID}/research` | Retrieve research reports and references |
 | — | `GET /health` | Health check |
 | — | `GET /swagger/` | Interactive API docs |
 

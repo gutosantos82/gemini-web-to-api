@@ -212,4 +212,26 @@ func (h *GeminiHandler) HandleV1BetaStreamGenerateContent(c *fiber.Ctx) error {
 	return nil
 }
 
+// HandleRetrieveDeepResearch handles fetching existing deep research content
+func (h *GeminiHandler) HandleRetrieveDeepResearch(c *fiber.Ctx) error {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	conversationID := c.Params("conversationID")
+	if conversationID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(errorToResponse(fmt.Errorf("missing conversationID"), "invalid_request_error"))
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 1*time.Minute)
+	defer cancel()
+
+	response, err := h.client.RetrieveDeepResearch(ctx, conversationID)
+	if err != nil {
+		h.log.Error("RetrieveDeepResearch failed", zap.Error(err), zap.String("conversation_id", conversationID))
+		return c.Status(fiber.StatusInternalServerError).JSON(errorToResponse(err, "api_error"))
+	}
+
+	return c.JSON(response)
+}
+
 
